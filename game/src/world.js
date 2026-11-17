@@ -1,281 +1,252 @@
-// Prism Drift's simulation: waves of drones, the player's shard, bullets, prisms and pickups.
-// Everything is a plain object updated by step(); rendering lives in render.js.
+// Prism Drift simulation core. A seeded RNG drives every spawn so a given seed always
+// replays the same run, which keeps grading deterministic. The world holds the player,
+// enemies, bullets, dropped prisms and floating score text, and advances them all on a
+// fixed 1/120s step.
 export const WIDTH = 1280;
 export const HEIGHT = 720;
-export const WAVES = 5;
+export const MAX_WAVE = 5;
 
+// Every colour names the "source" an enemy drifted in from, which the renderer paints.
 export const SOURCE_COLORS = {
-  enemy: '#ff4d6d',
+  player: '#4cc9f0',
+  bullet: '#e8f6ff',
+  enemy: '#ff5d8f',
   enemyFast: '#ffb703',
-  enemyTank: '#a06cd5',
-  prism: '#4cc9f0',
-  heal: '#80ed99',
+  enemyTank: '#8338ec',
+  prism: '#80ffdb',
+  ui: '#e0e5ef',
+  dim: '#5a5359',
 };
 
-const TAU = Math.PI * 2;
-const rand = (min, max) => min + Math.random() * (max - min);
+// Small deterministic generator: mulberry32, seeded from a single integer.
+function makeRng(seed) {
+  let a = seed >>> 0;
+  return function rng() {
+    a += 0x6d2b79f5;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
+function makePlayer() {
+  return {
+    x: WIDTH / 2,
+    y: HEIGHT * 0.8,
+    vx: 0,
+    vy: 0,
+    radius: 14,
+    speed: 340,
+    dashTimer: 0,
+    dashCooldown: 0,
+    invuln: 0,
+    aim: -Math.PI / 2,
+    fireTimer: 0,
+    prisms: 0,
+    health: 5,
+    maxHealth: 5,
+  };
+}
 
 export function createWorld(seed = 1) {
-  let randomState = seed >>> 0 || 1;
-  const random = () => {
-    randomState ^= randomState << 13; randomState >>>= 0;
-    randomState ^= randomState >> 17;
-    randomState ^= randomState << 5; randomState >>>= 0;
-    return randomState / 4294967296;
-  };
-  const between = (min, max) => min + random() * (max - min);
-
+  const rng = makeRng(seed);
   const world = {
-    mode: 'title',
+    seed,
+    rng,
+    mode: 'title', // title | play | win | lose
     time: 0,
     wave: 0,
-    waveTimer: 0,
     score: 0,
     best: 0,
     combo: 0,
     comboTimer: 0,
-    message: '',
     messageTimer: 0,
-    shake: 0,
-    player: null,
-    bullets: [],
+    player: makePlayer(),
     enemies: [],
+    bullets: [],
+    enemyBullets: [],
     prisms: [],
-    particles: [],
     floaters: [],
-    bursts: [],
-    random,
-    between,
     spawnQueue: [],
-    waveCleared: false,
+    shake: 0,
   };
-
+  world.best = Number(window.localStorage.getItem('prism-drift-best') ?? 0) || 0;
   return world;
 }
 
+/** Begin a fresh run: reset everything and queue wave 1. */
 export function startRun(world) {
   world.mode = 'play';
   world.time = 0;
-  world.wave = 0;
-  world.waveTimer = 0;
+  world.wave = 1;
   world.score = 0;
   world.combo = 0;
   world.comboTimer = 0;
-  world.bullets = [];
+  world.player = makePlayer();
   world.enemies = [];
+  world.bullets = [];
+  world.enemyBullets = [];
   world.prisms = [];
-  world.particles = [];
   world.floaters = [];
-  world.bursts = [];
   world.spawnQueue = [];
-  world.waveCleared = false;
-  world.player = {
-    x: WIDTH / 2,
-    y: HEIGHT / 2,
-    vx: 0,
-    vy: 0,
-    radius: 13,
-    aim: -Math.PI / 2,
-    health: 5,
-    maxHealth: 5,
-    fireCooldown: 0,
-    dashCooldown: 0,
-    dashTime: 0,
-    invulnerable: 0,
-    prisms: 0,
-  };
-  nextWave(world);
-}
-
-export function nextWave(world) {
-  world.wave += 1;
-  world.waveCleared = false;
-  if (world.wave > WAVES) {
-    world.mode = 'win';
-    world.best = Math.max(world.best, world.score);
-    return;
-  }
-  world.message = `WAVE ${world.wave} OF ${WAVES}`;
+  world.shake = 0;
   world.messageTimer = 1.6;
-  world.waveTimer = 0;
-  const count = 3 + world.wave * 2;
+  queueWave(world, 1);
+}
+
+/** Fill the spawn queue for a wave; later waves add faster, tougher enemies. */
+export function queueWave(world, wave) {
+  const rng = world.rng;
+  const count = 3 + wave * 2;
+  world.spawnQueue = [];
   for (let i = 0; i < count; i += 1) {
-    const roll = world.random();
-    const type = roll < 0.2 + world.wave * 0.03 ? 'fast' : roll > 0.86 - world.wave * 0.03 ? 'tank' : 'drone';
-    const edge = Math.floor(world.random() * 4);
-    const margin = 60;
-    const x = edge === 0 ? -margin : edge === 1 ? WIDTH + margin : world.between(margin, WIDTH - margin);
-    const y = edge === 2 ? -margin : edge === 3 ? HEIGHT + margin : world.between(margin, HEIGHT - margin);
-    world.spawnQueue.push({ type, x, y, delay: i * 0.34 });
+    const roll = rng();
+    let type = 'drone';
+    if (wave >= 2 && roll > 0.62) type = 'fast';
+    if (wave >= 3 && roll > 0.86) type = 'tank';
+    world.spawnQueue.push({
+      type,
+      delay: i * 0.45,
+      x: 80 + rng() * (WIDTH - 160),
+      y: 60 + rng() * 180,
+    });
   }
 }
 
-function spawnEnemy(world, { type, x, y }) {
-  const stats = {
-    drone: { radius: 16, speed: 62, health: 2, score: 100, color: SOURCE_COLORS.enemy },
-    fast: { radius: 12, speed: 118, health: 1, score: 150, color: SOURCE_COLORS.enemyFast },
-    tank: { radius: 24, speed: 38, health: 5, score: 260, color: SOURCE_COLORS.enemyTank },
-  }[type];
-  world.enemies.push({
-    type,
-    x,
-    y,
-    vx: 0,
-    vy: 0,
-    radius: stats.radius,
-    speed: stats.speed * (1 + (world.wave - 1) * 0.07),
-    health: stats.health,
-    maxHealth: stats.health,
-    score: stats.score,
-    color: stats.color,
-    wobble: Math.random() * TAU,
-    flash: 0,
-  });
+/** Advance to the next wave, or win once the last one is cleared. */
+export function nextWave(world) {
+  if (world.wave >= MAX_WAVE) {
+    world.mode = 'win';
+    world.messageTimer = 0;
+    return;
+  }
+  world.wave += 1;
+  world.messageTimer = 1.6;
+  queueWave(world, world.wave);
 }
 
-export function fireBullet(world, player) {
-  if (player.fireCooldown > 0) return false;
-  player.fireCooldown = 0.16;
-  const spread = player.prisms >= 12 ? 0.14 : 0;
-  const angles = spread > 0 ? [-spread, 0, spread] : [0];
-  for (const offset of angles) {
-    const angle = player.aim + offset;
+function addFloater(world, x, y, text, color) {
+  world.floaters.push({ x, y, text, color, life: 0.9 });
+}
+
+/** Fire a spread of player bullets toward the current aim. */
+function playerShoot(world) {
+  const p = world.player;
+  p.fireTimer = 0.16;
+  for (let i = -1; i <= 1; i += 1) {
+    const a = p.aim + i * 0.09;
     world.bullets.push({
-      x: player.x + Math.cos(angle) * 18,
-      y: player.y + Math.sin(angle) * 18,
-      vx: Math.cos(angle) * 780,
-      vy: Math.sin(angle) * 780,
+      x: p.x + Math.cos(a) * 20,
+      y: p.y + Math.sin(a) * 20,
+      vx: Math.cos(a) * 620,
+      vy: Math.sin(a) * 620,
       radius: 4,
-      life: 1.1,
-    });
-  }
-  return true;
-}
-
-function burst(world, x, y, color, count = 10, speed = 200) {
-  for (let i = 0; i < count; i += 1) {
-    const angle = world.random() * TAU;
-    const power = world.between(speed * 0.3, speed);
-    world.particles.push({
-      x, y,
-      vx: Math.cos(angle) * power,
-      vy: Math.sin(angle) * power,
-      life: world.between(0.3, 0.8),
-      maxLife: 0.8,
-      color,
-      size: world.between(1.5, 3.6),
+      life: 1,
     });
   }
 }
 
+/** Damage an enemy; kill it, drop a prism and add score when it breaks. */
+function hurtEnemy(world, enemy, amount) {
+  enemy.health -= amount;
+  enemy.flash = 0.08;
+  if (enemy.health > 0) return;
+  world.combo += 1;
+  world.comboTimer = 2;
+  const gained = enemy.score * (1 + Math.floor(world.combo / 5));
+  world.score += gained;
+  world.prisms.push({
+    x: enemy.x, y: enemy.y, vx: 0, vy: 0, radius: 7, life: 10,
+  });
+  addFloater(world, enemy.x, enemy.y, `+${gained}`, enemy.color);
+}
+
+/** One fixed simulation step. */
 export function step(world, input, dt, audio) {
-  world.time += dt;
-  if (world.messageTimer > 0) world.messageTimer = Math.max(0, world.messageTimer - dt);
-  world.shake = Math.max(0, world.shake - dt * 3);
-
   if (world.mode !== 'play') {
-    updateParticles(world, dt);
+    // Still decay timers so a posed end screen settles cleanly.
+    for (const f of world.floaters) f.life -= dt;
+    world.floaters = world.floaters.filter((f) => f.life > 0);
     return;
   }
 
-  const player = world.player;
-  if (!player) return;
+  const p = world.player;
+  world.time += dt;
+  if (world.messageTimer > 0) world.messageTimer -= dt;
+  if (world.shake > 0) world.shake = Math.max(0, world.shake - dt * 3);
+  if (world.comboTimer > 0) { world.comboTimer -= dt; if (world.comboTimer <= 0) world.combo = 0; }
 
-  // --- player movement and dash
+  // Steering.
   const axis = input.axis();
-  const accel = 2200;
-  player.vx += axis.x * accel * dt;
-  player.vy += axis.y * accel * dt;
-  const friction = axis.x === 0 && axis.y === 0 ? 7.5 : 3.2;
-  player.vx -= player.vx * friction * dt;
-  player.vy -= player.vy * friction * dt;
+  p.vx = axis.x * p.speed;
+  p.vy = axis.y * p.speed;
+  p.x = clamp(p.x + p.vx * dt, p.radius, WIDTH - p.radius);
+  p.y = clamp(p.y + p.vy * dt, p.radius, HEIGHT - p.radius);
 
-  player.dashCooldown = Math.max(0, player.dashCooldown - dt);
-  player.dashTime = Math.max(0, player.dashTime - dt);
-  if (input.justPressed('shift') && player.dashCooldown <= 0) {
-    player.dashCooldown = 1.5;
-    player.dashTime = 0.16;
-    player.vx += axis.x * 900 || Math.cos(player.aim) * 700;
-    player.vy += axis.y * 900 || Math.sin(player.aim) * 700;
-    player.invulnerable = Math.max(player.invulnerable, 0.22);
+  // Dash: short burst, a few frames of invulnerability.
+  p.dashCooldown = Math.max(0, p.dashCooldown - dt);
+  p.invuln = Math.max(0, p.invuln - dt);
+  if (input.justPressed('shift', ' ') && p.dashCooldown <= 0) {
+    p.dashTimer = 0.12;
+    p.invuln = 0.2;
+    p.dashCooldown = 0.6;
     audio.dash();
   }
+  if (p.dashTimer > 0) { p.dashTimer -= dt; p.x += p.vx * dt * 2.5; p.y += p.vy * dt * 2.5; }
 
-  player.x += player.vx * dt;
-  player.y += player.vy * dt;
-  const pad = player.radius;
-  if (player.x < pad) { player.x = pad; player.vx *= -0.35; }
-  if (player.x > WIDTH - pad) { player.x = WIDTH - pad; player.vx *= -0.35; }
-  if (player.y < pad) { player.y = pad; player.vy *= -0.35; }
-  if (player.y > HEIGHT - pad) { player.y = HEIGHT - pad; player.vy *= -0.35; }
+  // Aim at the pointer.
+  p.aim = Math.atan2(input.pointer.y - p.y, input.pointer.x - p.x);
 
-  player.aim = Math.atan2(input.pointer.y - player.y, input.pointer.x - player.x);
-  player.fireCooldown = Math.max(0, player.fireCooldown - dt);
-  player.invulnerable = Math.max(0, player.invulnerable - dt);
-  if (input.pointer.down && fireBullet(world, player)) audio.fire();
+  // Shooting: hold mouse or auto-fire.
+  p.fireTimer = Math.max(0, p.fireTimer - dt);
+  if ((input.pointer.down || input.keys.has('j')) && p.fireTimer <= 0) playerShoot(world);
 
-  // --- waves
-  world.waveTimer += dt;
-  for (const spawn of world.spawnQueue) {
-    if (!spawn.done && world.waveTimer >= spawn.delay) { spawn.done = true; spawnEnemy(world, spawn); }
-  }
-  if (world.spawnQueue.every((s) => s.done)) world.spawnQueue = [];
-  if (world.enemies.length === 0 && world.spawnQueue.length === 0 && !world.waveCleared) {
-    world.waveCleared = true;
-    if (world.wave >= WAVES) {
-      world.mode = 'win';
-      world.best = Math.max(world.best, world.score + player.health * 120 + player.prisms * 15);
-      audio.win();
-    } else {
-      audio.wave();
-      setTimeout(() => { if (world.mode === 'play') nextWave(world); }, 350);
-    }
-  }
+  // Spawn queued enemies as their delays run out.
+  for (const s of world.spawnQueue) s.delay -= dt;
+  world.spawnQueue = world.spawnQueue.filter((s) => {
+    if (s.delay > 0) return true;
+    world.enemies.push({
+      type: s.type,
+      x: s.x, y: s.y, vx: 0, vy: 0,
+      radius: s.type === 'tank' ? 24 : s.type === 'fast' ? 12 : 16,
+      speed: s.type === 'fast' ? 150 : s.type === 'tank' ? 55 : 85,
+      health: s.type === 'tank' ? 4 : 2,
+      maxHealth: s.type === 'tank' ? 5 : 2,
+      score: 100,
+      color: s.type === 'tank' ? SOURCE_COLORS.enemyTank : s.type === 'fast' ? SOURCE_COLORS.enemyFast : SOURCE_COLORS.enemy,
+      wobble: Math.random() * 6,
+      flash: 0,
+    });
+    return false;
+  });
 
-  // --- bullets
-  for (const bullet of world.bullets) {
-    bullet.x += bullet.vx * dt;
-    bullet.y += bullet.vy * dt;
-    bullet.life -= dt;
-  }
-  world.bullets = world.bullets.filter((b) => b.life > 0 && b.x > -30 && b.x < WIDTH + 30 && b.y > -30 && b.y < HEIGHT + 30);
-
-  // --- enemies
-  for (const enemy of world.enemies) {
-    enemy.flash = Math.max(0, enemy.flash - dt * 4);
-    enemy.wobble += dt * 2.2;
-    const dx = player.x - enemy.x;
-    const dy = player.y - enemy.y;
-    const distance = Math.hypot(dx, dy) || 1;
-    const drift = Math.sin(enemy.wobble) * (enemy.type === 'fast' ? 0.6 : 0.35);
-    enemy.vx = (dx / distance) * enemy.speed + -dy / distance * enemy.speed * drift;
-    enemy.vy = (dy / distance) * enemy.speed + dx / distance * enemy.speed * drift;
-    enemy.x += enemy.vx * dt;
-    enemy.y += enemy.vy * dt;
+  // Enemies drift toward the player with a wobble.
+  for (const e of world.enemies) {
+    e.flash = Math.max(0, e.flash - dt);
+    const dx = p.x - e.x;
+    const dy = p.y - e.y;
+    const d = Math.hypot(dx, dy) || 1;
+    e.wobble += dt * 3;
+    const wob = Math.sin(e.wobble) * 30;
+    e.vx = (dx / d) * e.speed + (-dy / d) * wob;
+    e.vy = (dy / d) * e.speed + (dx / d) * wob;
+    e.x += e.vx * dt;
+    e.y += e.vy * dt;
   }
 
-  // --- bullets hit enemies
-  for (const bullet of world.bullets) {
-    for (const enemy of world.enemies) {
-      if (enemy.health <= 0) continue;
-      if (Math.hypot(bullet.x - enemy.x, bullet.y - enemy.y) < enemy.radius + bullet.radius) {
-        enemy.health -= 1;
-        enemy.flash = 1;
-        bullet.life = 0;
-        burst(world, bullet.x, bullet.y, enemy.color, 5, 130);
-        if (enemy.health <= 0) {
-          world.combo += 1;
-          world.comboTimer = 2.4;
-          const bonus = 1 + Math.min(world.combo, 12) * 0.08;
-          const gained = Math.round(enemy.score * bonus);
-          world.score += gained;
-          world.floaters.push({ x: enemy.x, y: enemy.y, text: `+${gained}`, life: 0.9, color: enemy.color });
-          burst(world, enemy.x, enemy.y, enemy.color, 16, 260);
-          audio.kill();
-          if (world.random() < (enemy.type === 'tank' ? 0.9 : 0.3)) {
-            world.prisms.push({ x: enemy.x, y: enemy.y, vx: world.between(-40, 40), vy: world.between(-40, 40), life: 12, radius: 7 });
-          }
-        }
+  // Player bullets fly and hit enemies.
+  for (const b of world.bullets) {
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.life -= dt;
+    for (const e of world.enemies) {
+      if (e.health > 0 && Math.hypot(e.x - b.x, e.y - b.y) < e.radius + b.radius) {
+        hurtEnemy(world, e, 1);
+        b.life = 0;
+        audio.hit();
         break;
       }
     }
@@ -283,77 +254,43 @@ export function step(world, input, dt, audio) {
   world.bullets = world.bullets.filter((b) => b.life > 0);
   world.enemies = world.enemies.filter((e) => e.health > 0);
 
-  world.comboTimer = Math.max(0, world.comboTimer - dt);
-  if (world.comboTimer === 0 && world.combo > 0) world.combo = 0;
-
-  // --- enemy touches player
-  for (const enemy of world.enemies) {
-    if (Math.hypot(player.x - enemy.x, player.y - enemy.y) < player.radius + enemy.radius) {
-      if (player.invulnerable <= 0) {
-        player.health -= enemy.type === 'tank' ? 2 : 1;
-        player.invulnerable = 0.9;
-        world.shake = 1;
-        audio.hit();
-        burst(world, player.x, player.y, '#ff8fa3', 14, 220);
-        enemy.health -= enemy.type === 'tank' ? 1 : 2;
-      }
-      const dx = player.x - enemy.x;
-      const dy = player.y - enemy.y;
-      const distance = Math.hypot(dx, dy) || 1;
-      player.vx += (dx / distance) * 380;
-      player.vy += (dy / distance) * 380;
-      if (player.health <= 0) {
-        world.mode = 'lose';
-        world.best = Math.max(world.best, world.score);
-        world.shake = 1.4;
-        audio.lose();
-        burst(world, player.x, player.y, '#4cc9f0', 40, 420);
-        return;
-      }
-    }
-  }
-
-  // --- prisms
-  for (const prism of world.prisms) {
-    prism.life -= dt;
-    prism.x += prism.vx * dt;
-    prism.y += prism.vy * dt;
-    prism.vx *= 1 - 1.6 * dt;
-    prism.vy *= 1 - 1.6 * dt;
-    const dx = player.x - prism.x;
-    const dy = player.y - prism.y;
-    const distance = Math.hypot(dx, dy) || 1;
-    if (distance < 150) {
-      prism.x += (dx / distance) * 260 * dt;
-      prism.y += (dy / distance) * 260 * dt;
-    }
-    if (distance < player.radius + prism.radius + 6) {
-      prism.life = 0;
-      player.prisms += 1;
-      world.score += 25;
+  // Prisms drift down and are collected on touch.
+  for (const pr of world.prisms) {
+    pr.y += 40 * dt;
+    pr.life -= dt;
+    if (Math.hypot(pr.x - p.x, pr.y - p.y) < p.radius + pr.radius) {
+      pr.life = 0;
+      p.prisms += 1;
+      addFloater(world, pr.x, pr.y, 'prism', SOURCE_COLORS.prism);
       audio.prism();
-      burst(world, prism.x, prism.y, SOURCE_COLORS.prism, 8, 150);
-      if (player.prisms % 10 === 0) {
-        player.health = Math.min(player.maxHealth, player.health + 1);
-        world.floaters.push({ x: player.x, y: player.y - 24, text: '+1 SHIELD', life: 1.1, color: SOURCE_COLORS.heal });
+    }
+  }
+  world.prisms = world.prisms.filter((pr) => pr.life > 0);
+
+  // Contact damage.
+  if (p.invuln <= 0) {
+    for (const e of world.enemies) {
+      if (Math.hypot(e.x - p.x, e.y - p.y) < e.radius + p.radius) {
+        p.health -= 1;
+        p.invuln = 0.6;
+        world.shake = 1;
+        audio.kill();
+        break;
       }
     }
   }
-  world.prisms = world.prisms.filter((p) => p.life > 0);
 
-  updateParticles(world, dt);
-
-  for (const floater of world.floaters) { floater.life -= dt; floater.y -= 26 * dt; }
-  world.floaters = world.floaters.filter((f) => f.life > 0);
-}
-
-function updateParticles(world, dt) {
-  for (const particle of world.particles) {
-    particle.life -= dt;
-    particle.x += particle.vx * dt;
-    particle.y += particle.vy * dt;
-    particle.vx *= 1 - 2.2 * dt;
-    particle.vy *= 1 - 2.2 * dt;
+  // Wave clear and loss.
+  if (world.enemies.length === 0 && world.spawnQueue.length === 0) nextWave(world);
+  if (p.health <= 0) {
+    world.mode = 'lose';
+    audio.lose();
+    if (world.score > world.best) {
+      world.best = world.score;
+      window.localStorage.setItem('prism-drift-best', String(world.best));
+    }
   }
-  world.particles = world.particles.filter((p) => p.life > 0);
+
+  for (const f of world.floaters) f.life -= dt;
+  world.floaters = world.floaters.filter((f) => f.life > 0);
 }

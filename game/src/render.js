@@ -1,5 +1,7 @@
-// All drawing: the arena, the shard, drones, bullets, prisms, HUD, title, win and lose screens.
-import { WIDTH, HEIGHT, WAVES, SOURCE_COLORS } from './world.js';
+// All drawing for Prism Drift: neon grid arena, the player shard, enemies, bullets, prisms,
+// HUD and the title/win/lose overlays. createRenderer returns a single draw(world) the loop
+// calls every frame; the visuals are pure canvas2D, no assets.
+import { WIDTH, HEIGHT, SOURCE_COLORS } from './world.js';
 
 const TAU = Math.PI * 2;
 
@@ -8,13 +10,14 @@ export function createRenderer(canvas) {
   let gridPhase = 0;
 
   function background(world) {
-    const gradient = ctx.createRadialGradient(WIDTH / 2, HEIGHT / 2, 80, WIDTH / 2, HEIGHT / 2, WIDTH * 0.72);
-    gradient.addColorStop(0, '#101a33');
-    gradient.addColorStop(0.55, '#080d1a');
-    gradient.addColorStop(1, '#04060d');
-    ctx.fillStyle = gradient;
+    const g = ctx.createRadialGradient(WIDTH / 2, HEIGHT / 2, 80, WIDTH / 2, HEIGHT / 2, WIDTH * 0.72);
+    g.addColorStop(0, '#101a33');
+    g.addColorStop(0.55, '#080d1a');
+    g.addColorStop(1, '#04060d');
+    ctx.fillStyle = g;
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
+    // Scrolling grid for a sense of drift.
     gridPhase = (gridPhase + 0.35) % 64;
     ctx.save();
     ctx.strokeStyle = 'rgba(76,201,240,0.09)';
@@ -27,22 +30,23 @@ export function createRenderer(canvas) {
     }
     ctx.restore();
 
-    const glow = ctx.createRadialGradient(world.player?.x ?? WIDTH / 2, world.player?.y ?? HEIGHT / 2, 20, world.player?.x ?? WIDTH / 2, world.player?.y ?? HEIGHT / 2, 320);
+    const px = world.player?.x ?? WIDTH / 2;
+    const py = world.player?.y ?? HEIGHT / 2;
+    const glow = ctx.createRadialGradient(px, py, 20, px, py, 320);
     glow.addColorStop(0, 'rgba(76,201,240,0.11)');
     glow.addColorStop(1, 'rgba(76,201,240,0)');
     ctx.fillStyle = glow;
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
   }
 
-  function arena(world) {
+  function arena() {
     ctx.save();
     const inset = 10;
     ctx.strokeStyle = 'rgba(76,201,240,0.35)';
     ctx.lineWidth = 2;
     ctx.strokeRect(inset, inset, WIDTH - inset * 2, HEIGHT - inset * 2);
     ctx.strokeStyle = 'rgba(76,201,240,0.14)';
-    for (const corner of [[inset, inset, 1, 1], [WIDTH - inset, inset, -1, 1], [inset, HEIGHT - inset, 1, -1], [WIDTH - inset, HEIGHT - inset, -1, -1]]) {
-      const [x, y, sx, sy] = corner;
+    for (const [x, y, sx, sy] of [[inset, inset, 1, 1], [WIDTH - inset, inset, -1, 1], [inset, HEIGHT - inset, 1, -1], [WIDTH - inset, HEIGHT - inset, -1, -1]]) {
       ctx.beginPath();
       ctx.moveTo(x, y + sy * 46);
       ctx.lineTo(x, y);
@@ -54,275 +58,174 @@ export function createRenderer(canvas) {
   }
 
   function ship(world) {
-    const player = world.player;
-    if (!player) return;
+    const p = world.player;
+    if (!p) return;
     ctx.save();
-    ctx.translate(player.x, player.y);
-    if (player.invulnerable > 0 && Math.floor(world.time * 18) % 2 === 0) ctx.globalAlpha = 0.4;
-
-    ctx.save();
-    ctx.rotate(player.aim);
-    const cone = ctx.createLinearGradient(20, 0, 130, 0);
-    cone.addColorStop(0, 'rgba(76,201,240,0.28)');
-    cone.addColorStop(1, 'rgba(76,201,240,0)');
-    ctx.fillStyle = cone;
-    ctx.beginPath(); ctx.moveTo(16, -13); ctx.lineTo(140, 0); ctx.lineTo(16, 13); ctx.closePath(); ctx.fill();
-    ctx.restore();
-
-    ctx.shadowColor = '#4cc9f0';
-    ctx.shadowBlur = player.dashTime > 0 ? 34 : 18;
-    ctx.fillStyle = '#e8fbff';
+    ctx.translate(p.x, p.y);
+    if (p.invuln > 0 && Math.floor(p.invuln * 30) % 2 === 0) ctx.globalAlpha = 0.4;
+    ctx.rotate(p.aim + Math.PI / 2);
+    ctx.fillStyle = SOURCE_COLORS.player;
     ctx.beginPath();
-    ctx.moveTo(16, 0);
-    ctx.lineTo(-11, 12);
-    ctx.lineTo(-5, 0);
-    ctx.lineTo(-11, -12);
+    ctx.moveTo(0, -20);
+    ctx.lineTo(14, 14);
+    ctx.lineTo(0, 7);
+    ctx.lineTo(-14, 14);
     ctx.closePath();
     ctx.fill();
+    ctx.strokeStyle = SOURCE_COLORS.prism;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
 
-    ctx.fillStyle = '#4cc9f0';
+    // Aim line.
+    ctx.save();
+    ctx.strokeStyle = 'rgba(128,255,219,0.35)';
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.arc(0, 0, 4.5, 0, TAU);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-
-    ctx.strokeStyle = 'rgba(232,251,255,0.55)';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.arc(0, 0, player.radius + 5, 0, TAU);
+    ctx.moveTo(p.x + Math.cos(p.aim) * 22, p.y + Math.sin(p.aim) * 22);
+    ctx.lineTo(p.x + Math.cos(p.aim) * 70, p.y + Math.sin(p.aim) * 70);
     ctx.stroke();
     ctx.restore();
   }
 
-  function droneShape(enemy) {
-    ctx.save();
-    ctx.translate(enemy.x, enemy.y);
-    ctx.rotate(enemy.wobble * 0.6);
-    ctx.shadowColor = enemy.color;
-    ctx.shadowBlur = enemy.flash > 0 ? 26 : 12;
-    ctx.fillStyle = enemy.flash > 0 ? '#ffffff' : enemy.color;
-    const sides = enemy.type === 'tank' ? 6 : enemy.type === 'fast' ? 3 : 5;
-    ctx.beginPath();
-    for (let i = 0; i < sides; i += 1) {
-      const angle = (i / sides) * TAU - Math.PI / 2;
-      const radius = enemy.radius;
-      const px = Math.cos(angle) * radius;
-      const py = Math.sin(angle) * radius;
-      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  function enemies(world) {
+    for (const e of world.enemies) {
+      ctx.save();
+      ctx.translate(e.x, e.y);
+      const sides = e.type === 'fast' ? 3 : e.type === 'tank' ? 6 : 4;
+      ctx.fillStyle = e.flash > 0 ? '#ffffff' : e.color;
+      ctx.beginPath();
+      for (let i = 0; i < sides; i += 1) {
+        const a = (i / sides) * TAU - Math.PI / 2;
+        const r = e.radius;
+        if (i === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+        else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+      }
+      ctx.closePath();
+      ctx.fill();
+      // Health pips for tough enemies.
+      if (e.maxHealth > 2) {
+        ctx.fillStyle = 'rgba(0,0,0,0.45)';
+        ctx.fillRect(-e.radius, -e.radius - 10, e.radius * 2, 5);
+        ctx.fillStyle = SOURCE_COLORS.prism;
+        ctx.fillRect(-e.radius, -e.radius - 10, e.radius * 2 * (e.health / e.maxHealth), 5);
+      }
+      ctx.restore();
     }
-    ctx.closePath();
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = 'rgba(6,8,16,0.72)';
-    ctx.beginPath();
-    ctx.arc(0, 0, enemy.radius * 0.42, 0, TAU);
-    ctx.fill();
-    if (enemy.maxHealth > 1) {
-      ctx.fillStyle = enemy.flash > 0 ? '#0a0f1c' : '#ffffff';
-      ctx.beginPath(); ctx.arc(0, 0, 2.6, 0, TAU); ctx.fill();
-    }
-    ctx.restore();
   }
 
-  function bulletsAndPrisms(world) {
-    ctx.save();
-    ctx.shadowColor = '#bde0fe';
-    ctx.shadowBlur = 14;
-    for (const bullet of world.bullets) {
-      ctx.fillStyle = '#e8fbff';
+  function bullets(world) {
+    ctx.fillStyle = SOURCE_COLORS.bullet;
+    for (const b of world.bullets) {
       ctx.beginPath();
-      ctx.ellipse(bullet.x, bullet.y, bullet.radius * 1.7, bullet.radius, Math.atan2(bullet.vy, bullet.vx), 0, TAU);
+      ctx.arc(b.x, b.y, b.radius, 0, TAU);
       ctx.fill();
     }
-    ctx.restore();
+    ctx.fillStyle = SOURCE_COLORS.enemy;
+    for (const b of world.enemyBullets) {
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.radius, 0, TAU);
+      ctx.fill();
+    }
+  }
 
-    for (const prism of world.prisms) {
+  function prisms(world) {
+    for (const pr of world.prisms) {
       ctx.save();
-      ctx.translate(prism.x, prism.y);
-      ctx.rotate(world.time * 2.4);
-      ctx.shadowColor = SOURCE_COLORS.prism;
-      ctx.shadowBlur = 18;
+      ctx.translate(pr.x, pr.y);
+      ctx.rotate(pr.life * 2);
       ctx.fillStyle = SOURCE_COLORS.prism;
       ctx.beginPath();
-      ctx.moveTo(0, -prism.radius);
-      ctx.lineTo(prism.radius, 0);
-      ctx.lineTo(0, prism.radius);
-      ctx.lineTo(-prism.radius, 0);
+      ctx.moveTo(0, -pr.radius);
+      ctx.lineTo(pr.radius, 0);
+      ctx.lineTo(0, pr.radius);
+      ctx.lineTo(-pr.radius, 0);
       ctx.closePath();
       ctx.fill();
       ctx.restore();
     }
   }
 
-  function particles(world) {
-    for (const particle of world.particles) {
-      const alpha = Math.max(0, particle.life / particle.maxLife);
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = particle.color;
-      ctx.beginPath();
-      ctx.arc(particle.x, particle.y, particle.size, 0, TAU);
-      ctx.fill();
+  function floaters(world) {
+    ctx.textAlign = 'center';
+    for (const f of world.floaters) {
+      ctx.globalAlpha = Math.min(1, f.life);
+      ctx.fillStyle = f.color;
+      ctx.font = '600 18px system-ui, sans-serif';
+      ctx.fillText(f.text, f.x, f.y);
     }
     ctx.globalAlpha = 1;
   }
 
-  function floaters(world) {
-    ctx.save();
-    ctx.textAlign = 'center';
-    ctx.font = '700 20px "Segoe UI", system-ui, sans-serif';
-    for (const floater of world.floaters) {
-      ctx.globalAlpha = Math.min(1, floater.life);
-      ctx.fillStyle = floater.color;
-      ctx.fillText(floater.text, floater.x, floater.y);
-    }
-    ctx.restore();
-  }
-
   function hud(world) {
-    const player = world.player;
-    if (!player) return;
-    ctx.save();
-    ctx.font = '700 22px "Segoe UI", system-ui, sans-serif';
+    const p = world.player;
     ctx.textAlign = 'left';
-    ctx.fillStyle = 'rgba(232,251,255,0.92)';
-    ctx.fillText(`SCORE ${world.score}`, 34, 52);
-
-    ctx.font = '600 15px "Segoe UI", system-ui, sans-serif';
-    ctx.fillStyle = 'rgba(140,190,220,0.85)';
-    ctx.fillText(`WAVE ${Math.min(world.wave, WAVES)}/${WAVES}`, 34, 78);
-
+    ctx.fillStyle = SOURCE_COLORS.ui;
+    ctx.font = '600 22px system-ui, sans-serif';
+    ctx.fillText(`SCORE ${world.score}`, 30, 46);
+    ctx.fillText(`WAVE ${world.wave}`, 30, 76);
     if (world.combo > 1) {
       ctx.fillStyle = SOURCE_COLORS.enemyFast;
-      ctx.font = '700 17px "Segoe UI", system-ui, sans-serif';
-      ctx.fillText(`COMBO x${world.combo}`, 34, 104);
+      ctx.fillText(`COMBO x${world.combo}`, 30, 106);
     }
-
-    for (let i = 0; i < player.maxHealth; i += 1) {
-      const x = 34 + i * 30;
-      const filled = i < player.health;
-      ctx.fillStyle = filled ? '#4cc9f0' : 'rgba(76,201,240,0.18)';
-      ctx.beginPath();
-      ctx.moveTo(x, 128);
-      ctx.lineTo(x + 11, 140);
-      ctx.lineTo(x, 152);
-      ctx.lineTo(x - 11, 140);
-      ctx.closePath();
-      ctx.fill();
+    // Health bar, bottom-left.
+    if (p) {
+      const bw = 220;
+      ctx.fillStyle = 'rgba(255,255,255,0.15)';
+      ctx.fillRect(30, HEIGHT - 46, bw, 16);
+      ctx.fillStyle = p.health > 2 ? SOURCE_COLORS.player : SOURCE_COLORS.enemy;
+      ctx.fillRect(30, HEIGHT - 46, (bw * Math.max(0, p.health)) / p.maxHealth, 16);
+      ctx.fillStyle = SOURCE_COLORS.ui;
+      ctx.font = '600 14px system-ui, sans-serif';
+      ctx.fillText(`HEALTH ${Math.max(0, p.health)}/${p.maxHealth}   PRISMS ${p.prisms}`, 30, HEIGHT - 54);
     }
-
-    ctx.textAlign = 'right';
-    ctx.font = '700 20px "Segoe UI", system-ui, sans-serif';
-    ctx.fillStyle = SOURCE_COLORS.prism;
-    ctx.fillText(`◆ ${player.prisms}`, WIDTH - 34, 52);
-
-    ctx.font = '600 14px "Segoe UI", system-ui, sans-serif';
-    ctx.fillStyle = player.dashCooldown <= 0 ? '#80ed99' : 'rgba(140,190,220,0.6)';
-    ctx.fillText(player.dashCooldown <= 0 ? 'DASH READY' : `DASH ${player.dashCooldown.toFixed(1)}s`, WIDTH - 34, 78);
-
-    ctx.textAlign = 'center';
-    ctx.font = '600 14px "Segoe UI", system-ui, sans-serif';
-    ctx.fillStyle = 'rgba(140,190,220,0.55)';
-    ctx.fillText('WASD MOVE   ·   MOUSE AIM   ·   CLICK FIRE   ·   SHIFT DASH', WIDTH / 2, HEIGHT - 26);
-
-    if (world.messageTimer > 0) {
-      ctx.globalAlpha = Math.min(1, world.messageTimer);
-      ctx.font = '800 52px "Segoe UI", system-ui, sans-serif';
-      ctx.fillStyle = '#e8fbff';
-      ctx.shadowColor = '#4cc9f0';
-      ctx.shadowBlur = 26;
-      ctx.fillText(world.message, WIDTH / 2, HEIGHT / 2 - 40);
-    }
-    ctx.restore();
   }
 
-  function title(world) {
+  function overlay(world) {
+    if (world.mode === 'title') {
+      ctx.fillStyle = 'rgba(4,6,13,0.7)';
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = SOURCE_COLORS.prism;
+      ctx.font = '700 64px system-ui, sans-serif';
+      ctx.fillText('PRISM DRIFT', WIDTH / 2, HEIGHT / 2 - 20);
+      ctx.fillStyle = SOURCE_COLORS.ui;
+      ctx.font = '500 22px system-ui, sans-serif';
+      ctx.fillText('WASD / arrows to move · mouse to aim · click or Space to start', WIDTH / 2, HEIGHT / 2 + 34);
+      ctx.fillText('Shift to dash · collect prisms · survive 5 waves', WIDTH / 2, HEIGHT / 2 + 70);
+      if (world.best > 0) ctx.fillText(`BEST ${world.best}`, WIDTH / 2, HEIGHT / 2 + 110);
+    } else if (world.mode === 'win' || world.mode === 'lose') {
+      ctx.fillStyle = world.mode === 'win' ? 'rgba(4,20,30,0.75)' : 'rgba(30,4,16,0.75)';
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = world.mode === 'win' ? SOURCE_COLORS.prism : SOURCE_COLORS.enemy;
+      ctx.font = '700 60px system-ui, sans-serif';
+      ctx.fillText(world.mode === 'win' ? 'ALL WAVES CLEARED' : 'RUN ENDED', WIDTH / 2, HEIGHT / 2 - 10);
+      ctx.fillStyle = SOURCE_COLORS.ui;
+      ctx.font = '600 30px system-ui, sans-serif';
+      ctx.fillText(`SCORE ${world.score}`, WIDTH / 2, HEIGHT / 2 + 40);
+      ctx.font = '500 20px system-ui, sans-serif';
+      ctx.fillText('Press R or Enter to run again', WIDTH / 2, HEIGHT / 2 + 86);
+    }
+  }
+
+  /** Draw one full frame. */
+  function draw(world) {
     ctx.save();
-    ctx.textAlign = 'center';
-    const pulse = 0.5 + Math.sin(world.time * 2) * 0.5;
-
-    ctx.shadowColor = '#4cc9f0';
-    ctx.shadowBlur = 30;
-    ctx.fillStyle = '#e8fbff';
-    ctx.font = '800 88px "Segoe UI", system-ui, sans-serif';
-    ctx.fillText('PRISM DRIFT', WIDTH / 2, HEIGHT / 2 - 90);
-
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = 'rgba(160,205,235,0.9)';
-    ctx.font = '600 22px "Segoe UI", system-ui, sans-serif';
-    ctx.fillText('Survive five waves. Shatter the drones. Bank the prisms.', WIDTH / 2, HEIGHT / 2 - 30);
-
-    ctx.fillStyle = 'rgba(140,190,220,0.75)';
-    ctx.font = '500 17px "Segoe UI", system-ui, sans-serif';
-    ctx.fillText('WASD / arrows to move   ·   mouse to aim   ·   click to fire   ·   shift to dash', WIDTH / 2, HEIGHT / 2 + 20);
-
-    ctx.globalAlpha = 0.55 + pulse * 0.45;
-    ctx.fillStyle = '#4cc9f0';
-    ctx.font = '800 26px "Segoe UI", system-ui, sans-serif';
-    ctx.fillText('PRESS SPACE OR CLICK TO START', WIDTH / 2, HEIGHT / 2 + 110);
-
-    if (world.best > 0) {
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = 'rgba(140,190,220,0.7)';
-      ctx.font = '600 16px "Segoe UI", system-ui, sans-serif';
-      ctx.fillText(`BEST ${world.best}`, WIDTH / 2, HEIGHT / 2 + 160);
+    if (world.shake > 0) {
+      ctx.translate((Math.random() - 0.5) * 8 * world.shake, (Math.random() - 0.5) * 8 * world.shake);
     }
+    background(world);
+    arena();
+    prisms(world);
+    enemies(world);
+    bullets(world);
+    ship(world);
+    floaters(world);
     ctx.restore();
+    hud(world);
+    overlay(world);
   }
 
-  function endScreen(world, won) {
-    ctx.save();
-    ctx.fillStyle = 'rgba(4,6,13,0.78)';
-    ctx.fillRect(0, 0, WIDTH, HEIGHT);
-    ctx.textAlign = 'center';
-
-    ctx.shadowColor = won ? '#80ed99' : '#ff4d6d';
-    ctx.shadowBlur = 28;
-    ctx.fillStyle = won ? '#80ed99' : '#ff4d6d';
-    ctx.font = '800 76px "Segoe UI", system-ui, sans-serif';
-    ctx.fillText(won ? 'SECTOR CLEARED' : 'SHARD DESTROYED', WIDTH / 2, HEIGHT / 2 - 90);
-
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = '#e8fbff';
-    ctx.font = '700 40px "Segoe UI", system-ui, sans-serif';
-    ctx.fillText(`SCORE ${world.score}`, WIDTH / 2, HEIGHT / 2 - 10);
-
-    ctx.font = '600 20px "Segoe UI", system-ui, sans-serif';
-    ctx.fillStyle = 'rgba(160,205,235,0.9)';
-    ctx.fillText(`Best ${world.best}   ·   Waves ${Math.min(world.wave, WAVES)}/${WAVES}   ·   Prisms ${world.player?.prisms ?? 0}`, WIDTH / 2, HEIGHT / 2 + 42);
-
-    ctx.fillStyle = '#4cc9f0';
-    ctx.font = '800 24px "Segoe UI", system-ui, sans-serif';
-    ctx.fillText('PRESS R OR CLICK TO PLAY AGAIN', WIDTH / 2, HEIGHT / 2 + 120);
-    ctx.restore();
-  }
-
-  return {
-    draw(world) {
-      ctx.save();
-      if (world.shake > 0) {
-        const amount = world.shake * 7;
-        ctx.translate((Math.random() - 0.5) * amount, (Math.random() - 0.5) * amount);
-      }
-      background(world);
-      arena(world);
-
-      if (world.mode === 'title') {
-        title(world);
-        particles(world);
-        ctx.restore();
-        return;
-      }
-
-      particles(world);
-      for (const enemy of world.enemies) droneShape(enemy);
-      bulletsAndPrisms(world);
-      ship(world);
-      floaters(world);
-      hud(world);
-
-      if (world.mode === 'win') endScreen(world, true);
-      if (world.mode === 'lose') endScreen(world, false);
-      ctx.restore();
-    },
-  };
+  return { draw };
 }
