@@ -1,5 +1,5 @@
-// Prism Drift's entry point: builds the world, runs the fixed-step loop and draws every frame.
-// A ?shot= query poses the game for its screenshots: start, play or end.
+// Prism Drift entry point: builds the world, runs the fixed-step loop, draws every frame.
+// A ?shot=start|play|end query poses the game for its screenshots instead of looping.
 import { createWorld, startRun, step, nextWave, WIDTH, HEIGHT, SOURCE_COLORS } from './world.js';
 import { createRenderer } from './render.js';
 import { createInput } from './input.js';
@@ -18,7 +18,26 @@ const renderer = createRenderer(canvas);
 const input = createInput(canvas);
 const audio = createAudio();
 
-/** Poses a rich mid-run frame so the play screenshot shows the real loop. */
+/** Push a helper onto a spawn spot, scaled by the playfield fractions fx/fy. */
+function spawnEnemy(world, type, fx, fy) {
+  world.enemies.push({
+    type,
+    x: WIDTH * fx,
+    y: HEIGHT * fy,
+    vx: 0,
+    vy: 0,
+    radius: type === 'tank' ? 24 : type === 'fast' ? 12 : 16,
+    speed: 80,
+    health: type === 'tank' ? 4 : 2,
+    maxHealth: type === 'tank' ? 5 : 2,
+    score: 100,
+    color: type === 'tank' ? SOURCE_COLORS.enemyTank : type === 'fast' ? SOURCE_COLORS.enemyFast : SOURCE_COLORS.enemy,
+    wobble: fx * 6,
+    flash: 0,
+  });
+}
+
+/** Pose a busy mid-run frame so the play screenshot shows the real loop. */
 function posePlay() {
   startRun(world);
   world.wave = 2;
@@ -40,24 +59,21 @@ function posePlay() {
     ['drone', 0.72, 0.22], ['drone', 0.84, 0.46], ['fast', 0.62, 0.30],
     ['fast', 0.30, 0.24], ['tank', 0.76, 0.70], ['drone', 0.22, 0.40],
   ];
-  for (const [type, fx, fy] of spots) {
-    world.enemies.push({
-      type, x: WIDTH * fx, y: HEIGHT * fy, vx: 0, vy: 0,
-      radius: type === 'tank' ? 24 : type === 'fast' ? 12 : 16,
-      speed: 80, health: type === 'tank' ? 4 : 2, maxHealth: type === 'tank' ? 5 : 2,
-      score: 100, color: type === 'tank' ? SOURCE_COLORS.enemyTank : type === 'fast' ? SOURCE_COLORS.enemyFast : SOURCE_COLORS.enemy,
-      wobble: fx * 6, flash: 0,
-    });
-  }
+  for (const [type, fx, fy] of spots) spawnEnemy(world, type, fx, fy);
   for (let i = 0; i < 4; i += 1) {
     const angle = -0.5 + (i - 1.5) * 0.02;
-    world.bullets.push({ x: player.x + Math.cos(angle) * (60 + i * 90), y: player.y + Math.sin(angle) * (60 + i * 90), vx: 0, vy: 0, radius: 4, life: 1 });
+    world.bullets.push({
+      x: player.x + Math.cos(angle) * (60 + i * 90),
+      y: player.y + Math.sin(angle) * (60 + i * 90),
+      vx: 0, vy: 0, radius: 4, life: 1,
+    });
   }
   world.prisms.push({ x: WIDTH * 0.55, y: HEIGHT * 0.78, vx: 0, vy: 0, life: 10, radius: 7 });
   world.prisms.push({ x: WIDTH * 0.88, y: HEIGHT * 0.34, vx: 0, vy: 0, life: 10, radius: 7 });
   world.floaters.push({ x: WIDTH * 0.66, y: HEIGHT * 0.20, text: '+260', life: 0.9, color: SOURCE_COLORS.enemyTank });
 }
 
+/** Pose the post-run frame with the final score on screen. */
 function poseEnd() {
   startRun(world);
   world.wave = 5;
@@ -78,6 +94,7 @@ else if (shot === 'start') world.mode = 'title';
 const status = document.getElementById('status');
 function announce(text) { if (status) status.textContent = text; }
 
+// Start or restart on the keyboard, unlocking audio on the first gesture.
 window.addEventListener('keydown', (event) => {
   const key = event.key.toLowerCase();
   audio.resume();
@@ -91,8 +108,10 @@ canvas.addEventListener('mousedown', () => {
 });
 
 if (shot) {
+  // A posed screenshot: draw once and stop, the capture tool reads the settled frame.
   renderer.draw(world);
 } else {
+  // Fixed-step simulation with a render on top, so movement stays frame-rate independent.
   let previous = performance.now();
   let accumulator = 0;
   const STEP = 1 / 120;

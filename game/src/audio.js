@@ -1,9 +1,12 @@
-// Small WebAudio synth: every sound is generated, so the game loads no audio file.
+// WebAudio synth for Prism Drift. Every effect is generated in code, so the game ships no audio file
+// and works fully offline. The context is created lazily on the first user gesture, since browsers
+// block audio until then.
 export function createAudio() {
   let context = null;
   let master = null;
   let enabled = true;
 
+  // Create the context and a quiet master gain once, then reuse it.
   function ensure() {
     if (context !== null) return context;
     const Ctor = window.AudioContext || window.webkitAudioContext;
@@ -15,6 +18,7 @@ export function createAudio() {
     return context;
   }
 
+  // A short pitched tone: sweeps from `frequency` to `slideTo` over `duration`.
   function blip({ frequency = 440, slideTo = frequency, duration = 0.12, type = 'sine', gain = 0.5 }) {
     if (!enabled) return;
     const ctx = ensure();
@@ -34,6 +38,7 @@ export function createAudio() {
     osc.stop(now + duration + 0.02);
   }
 
+  // A decaying noise burst through a lowpass, for impacts.
   function noise({ duration = 0.2, gain = 0.4, cutoff = 1200 }) {
     if (!enabled) return;
     const ctx = ensure();
@@ -61,7 +66,8 @@ export function createAudio() {
     kill: () => blip({ frequency: 180, slideTo: 60, duration: 0.26, type: 'sawtooth', gain: 0.25 }),
     wave: () => blip({ frequency: 300, slideTo: 900, duration: 0.4, type: 'triangle', gain: 0.3 }),
     win: () => { blip({ frequency: 523, duration: 0.16, gain: 0.3 }); setTimeout(() => blip({ frequency: 784, duration: 0.24, gain: 0.3 }), 150); },
-    lose: () => { blip({ frequency: 220, slideTo: 70, duration: 0.7, type: 'sawtooth', gain: 0.3 }); },
+    lose: () => blip({ frequency: 220, slideTo: 70, duration: 0.7, type: 'sawtooth', gain: 0.3 }),
+    // Called on a gesture so a suspended context unlocks.
     resume: () => { const ctx = ensure(); if (ctx && ctx.state === 'suspended') ctx.resume(); },
   };
 }
